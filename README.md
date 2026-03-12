@@ -1,5 +1,4 @@
-# spatial-history-cuco-mining
-Mapping the spatial history of Copper and Cobalt mining in the DR Congo
+# Mapping the spatial history of Copper and Cobalt mining in the DR Congo
 
 ## Overview
 This project explores the spatial distribution and historical evolution of copper mining 
