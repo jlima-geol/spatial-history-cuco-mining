@@ -1,0 +1,13 @@
+name: copperbelt-download
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - requests
+      - pystac-client
+      - landsatxplore
+      - earthaccess
+      - tqdm
+      - python-dotenv

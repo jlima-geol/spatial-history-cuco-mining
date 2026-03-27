@@ -1,0 +1,33 @@
+name: copperbelt-analysis
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - gdal=3.6
+  - rasterio=1.3
+  - geopandas=0.14
+  - shapely=2.0
+  - fiona=1.9
+  - pyproj=3.6
+  - rtree
+  - rioxarray
+  - xarray
+  - adjustText
+  - numpy
+  - pandas
+  - matplotlib
+  - matplotlib-scalebar
+  - seaborn
+  - scikit-learn
+  - hdbscan
+  - contextily
+  - odc-geo
+  - odc-stac
+  - jupyterlab
+  - ipykernel
+  - pip
+  - pip:
+      - pyogrio
+      - mercantile
+      - rich
+      - mapclassify
