@@ -17,12 +17,15 @@ import io
 import os
 import zipfile
 from pathlib import Path
+from pystac_client import Client
 
 import geopandas as gpd
 import pandas as pd
 import requests
 from shapely.geometry import box
 
+import xarray as xr
+import rioxarray as rxr
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -30,7 +33,9 @@ from shapely.geometry import box
 
 # Canonic bounding box for the Copperbelt region (DRC + Zambia).
 # [minx, miny, maxx, maxy] = [lon_west, lat_south, lon_east, lat_north]
-COPPERBELT_BBOX: list[float] = [24.0, -13.0, 28.5, -10.0]
+COPPERBELT_BBOX: list[float] = [24.0, -13.7, 29.4, -10.0]
+CRS_PROJ                     = "EPSG:32735"
+CRS_GEO                      = "EPSG:4326"
 
 # Root directory of the project (folder containing /src, /data, /notebooks)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,9 +43,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_RAW       = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
 DATA_TEMP      = PROJECT_ROOT / "data" / "temp"
+MAPS_OUT       = PROJECT_ROOT / "outputs" / "maps"
+FIGURES_OUT    = PROJECT_ROOT / "outputs" / "figures"
 
 # Create the directories if they don't exist
-for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP):
+for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP, MAPS_OUT, FIGURES_OUT):
     _d.mkdir(parents=True, exist_ok=True)
 
 
@@ -48,43 +55,143 @@ for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP):
 # Sentinel-2 (ESA / Copernicus — AWS STAC)
 # ---------------------------------------------------------------------------
 
-def load_sentinel(
-    bbox: list[float] = COPPERBELT_BBOX,
+# -----------------------------------------
+# CONFIG
+# -----------------------------------------
+
+SENTINEL_DIR = DATA_RAW / "sentinel"
+
+ESSENTIAL_BANDS = {
+    "B02":  "blue",
+    "B03": "green",
+    "B04":   "red",
+    "B08":   "nir",
+    "B11": "swir16",
+    "B12": "swir22",
+    "SCL":   "scl",
+}
+
+STAC_URL = "https://earth-search.aws.element84.com/v1"
+
+
+# -----------------------------------------
+# DOWNLOAD FUNCTION
+# -----------------------------------------
+
+def download_sentinel_scene(
+    bbox: list[float],
     start: str = "2023-01-01",
     end: str = "2023-12-31",
     band: str = "red",
 ):
     """
-    Load a band from Sentinel-2 L2A directly from the AWS STAC as an xarray.
-
-    Parameters
-    ----------
-    bbox  : [minx, miny, maxx, maxy]
-    start : initial date ISO-8601
-    end   : final date ISO-8601
-    band  : code of the Sentinel-2 band (e.g., 'B04', 'B08', 'SCL')
+    Searches for a Sentinel-2 L2A scene in the AWS STAC and downloads the essential bands.
+    Saves to DATA_RAW/sentinel/<scene_id>/.
     """
-    try:
-        import rioxarray as rxr
-        from pystac_client import Client
 
-        catalog = Client.open("https://earth-search.aws.element84.com/v1")
-        items = catalog.search(
-            collections=["sentinel-2-l2a"],
-            bbox=bbox,
-            datetime=f"{start}/{end}",
-            max_items=1,
-        ).get_items()
+    catalog = Client.open(STAC_URL)
 
-        item = next(items, None)
-        if item is None:
-            raise ValueError("No Sentinel-2 item found.")
-        print(f"  Sentinel-2 — band {band} loaded: {item.id}")
-        return rxr.open_rasterio(item.assets[band].href)
-    
-    except Exception as e:
-        print(f"[ERROR] load_sentinel(): {e}")
-        raise
+    search = catalog.search(
+        collections=["sentinel-2-l2a"],
+        bbox=bbox,
+        datetime=f"{start}/{end}",
+        max_items=1,
+    )
+
+    items = list(search.get_items())
+    if not items:
+        raise ValueError("No scene found.")
+
+    item = items[0]
+    scene_id = item.id
+    scene_dir = SENTINEL_DIR / scene_id
+    scene_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Scene found: {scene_id}")
+    print(f"Saving to: {scene_dir}")
+
+    # -----------------------------------------
+    # Download bands
+    # -----------------------------------------
+
+    for name, code in ESSENTIAL_BANDS.items():
+        if code not in item.assets:
+            print(f"  ⚠️ Band {code} ({name}) not available in this scene.")
+            continue
+
+        asset = item.assets[code]
+        url = asset.href
+        out_path = scene_dir / f"{scene_id}_{code}.tif"
+
+        if out_path.exists():
+            print(f"  ✓ {name} ({code}) already exists — skipping.")
+            continue
+
+        print(f"  Downloading {name} ({code})...")
+        r = requests.get(url, stream=True)
+
+        if r.status_code != 200:
+            print(f"    ❌ Error downloading {code}: HTTP {r.status_code}")
+            continue
+
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        print(f"    Saved: {out_path.name}")
+
+    print("\n Download completed")
+    print(f"Files saved to: {scene_dir}")
+
+    return scene_dir
+
+# -----------------------------------------
+# LOAD BANDS FUNCTION
+# -----------------------------------------
+
+def load_sentinel_bands(scene_dir: Path) -> dict[str, xr.DataArray] | None:
+    """
+    Load the essential bands of a Sentinel-2 scene saved in:
+        DATA_RAW/sentinel/<scene_id>/
+
+    Returns:
+        dict {band_name: DataArray}
+    """
+
+    if not scene_dir.exists():
+        print(f"[WARN] Scene directory not found: {scene_dir}")
+        return None
+
+    print(f"\n Loading bands from scene: {scene_dir.name}")
+
+    bands: dict[str, xr.DataArray] = {}
+
+    for name, code in ESSENTIAL_BANDS.items():
+        pattern = f"*{code}*.tif"
+        matches = sorted(scene_dir.glob(pattern))
+
+        if not matches:
+            print(f"  ⚠️ Band absent: {code} ({name})")
+            continue
+
+        tif = matches[0]
+        print(f"  Opening {name} ({code}) → {tif.name}")
+
+        da = rxr.open_rasterio(tif, masked=True).squeeze()
+
+        # Reprojetar para o CRS do projeto
+        da = da.rio.reproject(CRS_PROJ)
+
+        bands[name] = da
+
+        print(f"    shape={da.shape}, crs={da.rio.crs}")
+
+    if not bands:
+        print("[WARN] No bands loaded.")
+        return None
+
+    print("\n All essential bands loaded!")
+    return bands
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +238,15 @@ def load_landsat(
 # ---------------------------------------------------------------------------
 # MODIS (NASA Earthdata)
 # ---------------------------------------------------------------------------
+MODIS_CACHE = DATA_RAW / "modis" / "annual_composites"
+MODIS_CACHE.mkdir(parents=True, exist_ok=True)
+
+MODIS_YEARS = list(range(2010, 2026))   # 2010 – 2025 inclusive
+MODIS_PRODUCT = "MOD13Q1"               # 250 m 16-day NDVI/EVI
+
+# -----------------------------------------
+# LOAD FUNCTION
+# -----------------------------------------
 
 def load_modis(
     short_name: str,
@@ -194,6 +310,63 @@ def load_modis(
     except Exception as e:
         print(f"[ERROR] load_modis(): {e}")
         raise
+
+# -----------------------------------------
+# BUILD ANNUAL COMPOSITES FUNCTION
+# -----------------------------------------
+
+def build_modis_annual_composites(
+    years: list[int],
+    cache_dir: Path,
+    short_name: str = MODIS_PRODUCT,
+    bbox: list[float] = COPPERBELT_BBOX,
+    earthaccess_strategy: str = "interactive",
+) -> dict[int, xr.DataArray]:
+    """
+    For each year, load all 16-day MODIS granules and compute the annual
+    median composite (robust to cloud contamination).
+
+    Results are cached as GeoTIFs: cache_dir/<year>.tif
+    Only missing years are downloaded.
+    """
+    composites: dict[int, xr.DataArray] = {}
+
+    for year in years:
+        cache_path = cache_dir / f"{year}.tif"
+
+        if cache_path.exists():
+            print(f"  ✓ MODIS {year}: loading from cache ({cache_path.name})")
+            composites[year] = rxr.open_rasterio(cache_path, masked=True).squeeze()
+            continue
+
+        print(f"  → MODIS {year}: downloading...")
+        try:
+            da = load_modis(
+                short_name=short_name,
+                bbox=bbox,
+                start=f"{year}-01-01",
+                end=f"{year}-12-31",
+                earthaccess_strategy=earthaccess_strategy,
+            )
+            # Reproject to project CRS
+            da = da.rio.reproject(CRS_PROJ)
+            # Scale MOD13Q1 NDVI: stored as int × 10000
+            da = da.where(da > -3000).astype(float) / 10_000.0
+            # Cache
+            da.rio.to_raster(cache_path)
+            composites[year] = da
+            print(f"    ✓ {year}: {da.shape}, saved to cache")
+
+        except Exception as exc:
+            print(f"  [WARN] MODIS {year} failed: {exc} — skipping")
+
+    return composites
+
+# ── NOTE ─────────────────────────────────────────────────────────────────────
+# Full 2010–2025 download (~15 years × multiple granules) can take several
+# minutes.  Set earthaccess_strategy='netrc' for non-interactive environments
+# after storing credentials with earthaccess.login(persist=True).
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ---------------------------------------------------------------------------
