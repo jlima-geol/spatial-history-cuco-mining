@@ -4,8 +4,8 @@ from pathlib import Path
 
 def create_aoi():
     # Create are of interest (AOI) as a bounding box (minx, miny, maxx, maxy)
-    minx, miny = 24.0, -13.5
-    maxx, maxy = 29.0, -10.0
+    minx, miny = 24.0, -13.7
+    maxx, maxy = 29.4, -10.0
 
     geom = box(minx, miny, maxx, maxy)
     gdf = gpd.GeoDataFrame({"name": ["Copperbelt_AOI"]}, geometry=[geom], crs="EPSG:4326")
