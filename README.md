@@ -1,6 +1,7 @@
 # Mapping the spatial history of Copper and Cobalt mining in the DR Congo
 
-![alt text](image.png)
+![kde_mineralisation](outputs/maps/mining_core/kde_mineralisation.png)
+
 
 ## Overview
 This project explores the spatial distribution and historical evolution of copper mining 
