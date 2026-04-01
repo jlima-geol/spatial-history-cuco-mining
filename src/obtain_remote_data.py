@@ -2,7 +2,6 @@
 obtain_remote_data.py
 ---------------------
 Remote data access pipeline for the Spatial History of Copper Mining (DRC) project.
-All data is loaded directly from the cloud — no manual downloads required.
 
 This module provides functions to load various datasets relevant to the project,
 including satellite imagery (Sentinel-2, Landsat, MODIS), infrastructure (Overture Maps),
@@ -14,7 +13,6 @@ and geological units (OneGeology WFS with fallback to USGS ScienceBase).
 from __future__ import annotations
 
 import io
-import os
 import zipfile
 from pathlib import Path
 from pystac_client import Client
@@ -26,6 +24,11 @@ from shapely.geometry import box
 
 import xarray as xr
 import rioxarray as rxr
+
+import earthaccess
+import pystac_client
+import planetary_computer
+import odc.stac
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -56,7 +59,7 @@ for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP, MAPS_OUT, FIGURES_OUT):
 # ---------------------------------------------------------------------------
 
 # -----------------------------------------
-# CONFIG
+# Config
 # -----------------------------------------
 
 SENTINEL_DIR = DATA_RAW / "sentinel"
@@ -75,7 +78,7 @@ STAC_URL = "https://earth-search.aws.element84.com/v1"
 
 
 # -----------------------------------------
-# DOWNLOAD FUNCTION
+# Download Function
 # -----------------------------------------
 
 def download_sentinel_scene(
@@ -146,7 +149,7 @@ def download_sentinel_scene(
     return scene_dir
 
 # -----------------------------------------
-# LOAD BANDS FUNCTION
+# Load Bands Function
 # -----------------------------------------
 
 def load_sentinel_bands(scene_dir: Path) -> dict[str, xr.DataArray] | None:
@@ -238,96 +241,89 @@ def load_landsat(
 # ---------------------------------------------------------------------------
 # MODIS (NASA Earthdata)
 # ---------------------------------------------------------------------------
-MODIS_CACHE = DATA_RAW / "modis" / "annual_composites"
+MODIS_CACHE   = DATA_PROCESSED / "modis" / "annual_composites"
 MODIS_CACHE.mkdir(parents=True, exist_ok=True)
 
-MODIS_YEARS = list(range(2010, 2026))   # 2010 – 2025 inclusive
-MODIS_PRODUCT = "MOD13Q1"               # 250 m 16-day NDVI/EVI
+MODIS_YEARS   = list(range(2010, 2026))
+MODIS_PRODUCT = "modis-13Q1-061"        # collection ID in Planetary Computer
+MODIS_BAND    = "250m_16_days_NDVI"     # asset name confirmed
+MODIS_NODATA  = -3000                   # fill value of the product
+
+
+def _open_pc_catalog() -> pystac_client.Client:
+    """Open the Planetary Computer catalog (no login required)."""
+    return pystac_client.Client.open(
+        "https://planetarycomputer.microsoft.com/api/stac/v1",
+        modifier=planetary_computer.sign_inplace,
+    )
 
 # -----------------------------------------
-# LOAD FUNCTION
+# Load Function
 # -----------------------------------------
 
-def load_modis(
-    short_name: str,
-    bbox: list[float] = COPPERBELT_BBOX,
-    start: str = "2021-01-01",
-    end: str = "2021-12-31",
-    earthaccess_strategy: str = "interactive",
-):
+def load_modis_ndvi_year(
+    year: int,
+    bbox: list[float],
+    collection: str = MODIS_PRODUCT,
+    band: str = MODIS_BAND,
+    target_crs: str = CRS_PROJ,
+    resolution: int = 250,
+) -> xr.DataArray:
     """
-    Load a MODIS granule directly from NASA CMR using earthaccess.
+    Download all MOD13Q1 granules for the year via Planetary Computer (COG),
+    stack them over time, apply quality mask, and return the annual median.
 
-    Parameters
-    ----------
-    short_name          : MODIS product short name (e.g., 'MOD13Q1')
-    bbox                : [lon1, lat1, lon2, lat2]
-    start, end          : temporal range (YYYY-MM-DD)
-    earthaccess_strategy: 'netrc' | 'environment' | 'interactive'
+    No login required, no HDF4 required.
     """
-    try:
-        import earthaccess
-        import rioxarray as rxr
+    catalog = _open_pc_catalog()
 
-        # Unpack bbox
-        lon1, lat1, lon2, lat2 = bbox
+    search = catalog.search(
+        collections=[collection],
+        bbox=bbox,
+        datetime=f"{year}-01-01/{year}-12-31",
+    )
+    items = list(search.get_items())
 
-        print(f"  MODIS — logging in with strategy='{earthaccess_strategy}'...")
-        earthaccess.login(strategy=earthaccess_strategy)
+    if not items:
+        raise ValueError(f"No granule found for {year} in bbox={bbox}")
 
-        print(f"  MODIS — searching granules for {short_name} in bbox {bbox}...")
-        results = earthaccess.search_data(
-            short_name=short_name,
-            bounding_box=(lon1, lat1, lon2, lat2),
-            temporal=(start, end),
-        )
+    print(f"    {year}: {len(items)} granules found")
 
-        if not results:
-            raise ValueError(
-                f"No MODIS granules found for product '{short_name}' "
-                f"within bbox={bbox} and dates {start} → {end}."
-            )
+    # odc.stac.load creates mosaic + clip in bbox automaticaly.
+    # Forcing output CRS since MODIS items have proj:code = EPSG:None.
+    ds = odc.stac.load(
+        items,
+        bands=[band],
+        bbox=bbox,
+        crs=target_crs,
+        resolution=resolution,
+        nodata=MODIS_NODATA,
+        groupby="solar_day",   # groups acquisitions from the same day before stacking
+    )
 
-        # Select first granule
-        granule = results[0]
-        links = granule.data_links()
+    da = ds[band]              # DataArray with dim "time"
 
-        if not links:
-            raise RuntimeError("MODIS granule found, but no downloadable data links available.")
+    # Scale: int × 10 000 → float NDVI [-1, 1]
+    da = da.where(da > MODIS_NODATA).astype(float) / 10_000.0
 
-        url = links[0]
-        print(f"  MODIS — downloading/opening granule: {url}")
+    # Annual Median (robust to residual clouds)
+    composite = da.median(dim="time").compute()
+    composite = composite.rio.write_crs(target_crs)
 
-        # Open directly with rioxarray
-        raster = rxr.open_rasterio(url)
-
-        # Ensure DataArray (some MODIS products have multiple subdatasets)
-        if isinstance(raster, list):
-            raster = raster[0]
-
-        return raster.squeeze()
-
-    except Exception as e:
-        print(f"[ERROR] load_modis(): {e}")
-        raise
+    return composite
 
 # -----------------------------------------
-# BUILD ANNUAL COMPOSITES FUNCTION
+# Build annual composites function
 # -----------------------------------------
 
 def build_modis_annual_composites(
-    years: list[int],
-    cache_dir: Path,
-    short_name: str = MODIS_PRODUCT,
+    years: list[int] = MODIS_YEARS,
+    cache_dir: Path = MODIS_CACHE,
     bbox: list[float] = COPPERBELT_BBOX,
-    earthaccess_strategy: str = "interactive",
 ) -> dict[int, xr.DataArray]:
     """
-    For each year, load all 16-day MODIS granules and compute the annual
-    median composite (robust to cloud contamination).
-
-    Results are cached as GeoTIFs: cache_dir/<year>.tif
-    Only missing years are downloaded.
+    Build annual NDVI composites for each year in `years`.
+    Cache in cache_dir/<year>.tif — only download missing years.
     """
     composites: dict[int, xr.DataArray] = {}
 
@@ -335,38 +331,24 @@ def build_modis_annual_composites(
         cache_path = cache_dir / f"{year}.tif"
 
         if cache_path.exists():
-            print(f"  ✓ MODIS {year}: loading from cache ({cache_path.name})")
-            composites[year] = rxr.open_rasterio(cache_path, masked=True).squeeze()
+            print(f"  ✓ MODIS {year}: cache hit")
+            composites[year] = rxr.open_rasterio(
+                cache_path, masked=True
+            ).squeeze()
             continue
 
-        print(f"  → MODIS {year}: downloading...")
+        print(f"  → MODIS {year}: downloading via Planetary Computer...")
         try:
-            da = load_modis(
-                short_name=short_name,
-                bbox=bbox,
-                start=f"{year}-01-01",
-                end=f"{year}-12-31",
-                earthaccess_strategy=earthaccess_strategy,
-            )
-            # Reproject to project CRS
-            da = da.rio.reproject(CRS_PROJ)
-            # Scale MOD13Q1 NDVI: stored as int × 10000
-            da = da.where(da > -3000).astype(float) / 10_000.0
-            # Cache
-            da.rio.to_raster(cache_path)
-            composites[year] = da
-            print(f"    ✓ {year}: {da.shape}, saved to cache")
+            composite = load_modis_ndvi_year(year=year, bbox=bbox)
+            composite.rio.to_raster(cache_path)
+            composites[year] = composite
+            print(f"    ✓ {year}: saved to {cache_path.name}")
 
         except Exception as exc:
             print(f"  [WARN] MODIS {year} failed: {exc} — skipping")
 
     return composites
 
-# ── NOTE ─────────────────────────────────────────────────────────────────────
-# Full 2010–2025 download (~15 years × multiple granules) can take several
-# minutes.  Set earthaccess_strategy='netrc' for non-interactive environments
-# after storing credentials with earthaccess.login(persist=True).
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ---------------------------------------------------------------------------
@@ -550,10 +532,6 @@ def load_srtm(
     earthaccess_strategy : 'netrc' | 'environment' | 'interactive'
     """
     try:
-        import earthaccess
-        import rioxarray as rxr
-        import xarray as xr
-
         if output_path is None:
             output_path = DATA_RAW / "srtm_copperbelt.tif"
 
