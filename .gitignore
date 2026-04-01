@@ -88,6 +88,7 @@ ipython_config.py
 # Other scripts and files
 obtain_remote_data_explained.py
 obtain_remote_data_explained2.py
+erosion-proxies-drainage-patterns_explained.py
 *.tif
 data/temp/
 

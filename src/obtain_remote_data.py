@@ -64,15 +64,7 @@ for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP, MAPS_OUT, FIGURES_OUT):
 
 SENTINEL_DIR = DATA_RAW / "sentinel"
 
-ESSENTIAL_BANDS = {
-    "B02":  "blue",
-    "B03": "green",
-    "B04":   "red",
-    "B08":   "nir",
-    "B11": "swir16",
-    "B12": "swir22",
-    "SCL":   "scl",
-}
+ESSENTIAL_BANDS = ["blue", "green", "red", "nir", "swir16", "swir22", "scl"]
 
 STAC_URL = "https://earth-search.aws.element84.com/v1"
 
@@ -117,24 +109,24 @@ def download_sentinel_scene(
     # Download bands
     # -----------------------------------------
 
-    for name, code in ESSENTIAL_BANDS.items():
-        if code not in item.assets:
-            print(f"  ⚠️ Band {code} ({name}) not available in this scene.")
+    for band in ESSENTIAL_BANDS:
+        if band not in item.assets:
+            print(f"  ⚠️ Band {band} not available in this scene.")
             continue
 
-        asset = item.assets[code]
+        asset = item.assets[band]
         url = asset.href
-        out_path = scene_dir / f"{scene_id}_{code}.tif"
+        out_path = scene_dir / f"{scene_id}_{band}.tif"
 
         if out_path.exists():
-            print(f"  ✓ {name} ({code}) already exists — skipping.")
+            print(f"  ✓ {band} already exists — skipping.")
             continue
 
-        print(f"  Downloading {name} ({code})...")
+        print(f"  Downloading {band}...")
         r = requests.get(url, stream=True)
 
         if r.status_code != 200:
-            print(f"    ❌ Error downloading {code}: HTTP {r.status_code}")
+            print(f"    ❌ Error downloading {band}: HTTP {r.status_code}")
             continue
 
         with open(out_path, "wb") as f:
@@ -147,6 +139,7 @@ def download_sentinel_scene(
     print(f"Files saved to: {scene_dir}")
 
     return scene_dir
+
 
 # -----------------------------------------
 # Load Bands Function
@@ -169,23 +162,21 @@ def load_sentinel_bands(scene_dir: Path) -> dict[str, xr.DataArray] | None:
 
     bands: dict[str, xr.DataArray] = {}
 
-    for name, code in ESSENTIAL_BANDS.items():
-        pattern = f"*{code}*.tif"
+    for band in ESSENTIAL_BANDS:
+        pattern = f"*{band}*.tif"
         matches = sorted(scene_dir.glob(pattern))
 
         if not matches:
-            print(f"  ⚠️ Band absent: {code} ({name})")
+            print(f"  ⚠️ Band absent: {band}")
             continue
 
         tif = matches[0]
-        print(f"  Opening {name} ({code}) → {tif.name}")
+        print(f"  Opening {band} → {tif.name}")
 
         da = rxr.open_rasterio(tif, masked=True).squeeze()
-
-        # Reprojetar para o CRS do projeto
         da = da.rio.reproject(CRS_PROJ)
 
-        bands[name] = da
+        bands[band] = da
 
         print(f"    shape={da.shape}, crs={da.rio.crs}")
 
@@ -195,6 +186,7 @@ def load_sentinel_bands(scene_dir: Path) -> dict[str, xr.DataArray] | None:
 
     print("\n All essential bands loaded!")
     return bands
+
 
 
 # ---------------------------------------------------------------------------
