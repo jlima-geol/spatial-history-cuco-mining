@@ -1,5 +1,7 @@
 # Mapping the spatial history of Copper and Cobalt mining in the DR Congo
 
+![alt text](image.png)
+
 ## Overview
 This project explores the spatial distribution and historical evolution of copper mining 
 in the Katanga Copperbelt (DR Congo). Using open-source geospatial data and tools, 
@@ -37,7 +39,7 @@ to reveal spatial patterns associated with copper mineralization and mining deve
 - Reproducible scripts in `src/`
 
 ## Project Status
-This project is currently under active development.  
+--> **This project is currently under active development.**  
 New data, notebooks, and modules are being added progressively.
 
 ## Author
