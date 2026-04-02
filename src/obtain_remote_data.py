@@ -382,8 +382,16 @@ def load_overture_data(
         if layer_type == "segment" and "class" in gdf.columns:
             gdf = gdf[gdf["class"].isin(["road", "motorway", "primary", "secondary"])]
 
-        if layer_type == "water" and "class" in gdf.columns:
-            gdf = gdf[gdf["class"].isin(["stream", "river"])]
+        if layer_type == "water" and "geometry" in gdf.columns:
+            # remove nulls
+            gdf = gdf[gdf.geometry.notnull()]
+            # remove invalid geometries
+            gdf = gdf[gdf.is_valid]
+            # garantees it's GeoDataFrame
+            if not isinstance(gdf, gpd.GeoDataFrame):
+                gdf = gpd.GeoDataFrame(gdf, geometry="geometry")
+            # filters only lines
+            gdf = gdf[gdf.geometry.geom_type == "LineString"]
 
         print(f"  Overture '{layer_type}' — {len(gdf):,} features loaded.")
         return gdf.reset_index(drop=True)
