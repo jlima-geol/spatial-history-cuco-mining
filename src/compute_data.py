@@ -672,3 +672,15 @@ def extract_zonal_stats(
     print(f"  ✓ {column_name}: {n_valid}/{len(gdf)} features with valid values")
     return result
 
+
+# ---------------------------------------------------------------------------
+# Raster downsampling before plotting
+# ---------------------------------------------------------------------------
+
+def downsample_for_plot(da: xr.DataArray, target_pixels: int = 1000) -> xr.DataArray:
+    """Downsample a DataArray to at most target_pixels on the longest axis."""
+    max_dim = max(da.sizes.get("x", 1), da.sizes.get("y", 1))
+    if max_dim <= target_pixels:
+        return da
+    factor = int(np.ceil(max_dim / target_pixels))
+    return da.coarsen(x=factor, y=factor, boundary="trim").mean()

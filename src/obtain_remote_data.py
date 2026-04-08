@@ -17,6 +17,7 @@ import zipfile
 from pathlib import Path
 from pystac_client import Client
 
+
 import geopandas as gpd
 import pandas as pd
 import requests
@@ -55,138 +56,268 @@ for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP, MAPS_OUT, FIGURES_OUT):
 
 
 # ---------------------------------------------------------------------------
-# Sentinel-2 (ESA / Copernicus — AWS STAC)
+# Sentinel-2 (ESA / Copernicus — AWS STAC via odc.stac)
 # ---------------------------------------------------------------------------
 
-# -----------------------------------------
-# Config
-# -----------------------------------------
+import os
+import time
+import requests
+import numpy as np
+import xarray as xr
+import rioxarray as rxr
+import rasterio
+from io import BytesIO
+from pathlib import Path
+from rioxarray.merge import merge_arrays
 
-SENTINEL_DIR = DATA_RAW / "sentinel"
+# Sentinel-2 band mapping
+_BAND_MAP = {
+    "blue":   "B02",
+    "green":  "B03",
+    "red":    "B04",
+    "nir":    "B08",
+    "swir16": "B11",
+    "swir22": "B12",
+    "scl":    "SCL",
+}
 
-ESSENTIAL_BANDS = ["blue", "green", "red", "nir", "swir16", "swir22", "scl"]
+SENTINEL_DIR   = DATA_RAW / "sentinel"
+ESSENTIAL_BANDS = ["red", "nir"]
 
-STAC_URL = "https://earth-search.aws.element84.com/v1"
+# 1 degree ~ 111320m -> 60m ~ 0.000539 degrees
+RES_DEG = 0.000539
+
+TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
 
 
-# -----------------------------------------
-# Download Function
-# -----------------------------------------
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
 
-def download_sentinel_scene(
-    bbox: list[float],
-    start: str = "2023-01-01",
-    end: str = "2023-12-31",
-    band: str = "red",
-):
-    """
-    Searches for a Sentinel-2 L2A scene in the AWS STAC and downloads the essential bands.
-    Saves to DATA_RAW/sentinel/<scene_id>/.
-    """
+def _build_evalscript(band_codes):
+    returns = []
+    for code in band_codes:
+        if code == "SCL":
+            returns.append("s.SCL / 100.0")
+        else:
+            returns.append(f"s.{code} / 10000.0")
 
-    catalog = Client.open(STAC_URL)
+    return f"""
+//VERSION=3
+function setup() {{
+  return {{
+    input:  [{{ bands: [{", ".join(f'"{b}"' for b in band_codes)}] }}],
+    output: {{ bands: {len(band_codes)}, sampleType: "FLOAT32" }}
+  }};
+}}
+function evaluatePixel(s) {{
+  return [{", ".join(returns)}];
+}}
+"""
 
-    search = catalog.search(
-        collections=["sentinel-2-l2a"],
-        bbox=bbox,
-        datetime=f"{start}/{end}",
-        max_items=1,
+
+def _get_cdse_token(client_id, client_secret):
+    resp = requests.post(
+        TOKEN_URL,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
     )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Token request failed: {resp.text}")
+    return resp.json()["access_token"]
 
-    items = list(search.get_items())
-    if not items:
-        raise ValueError("No scene found.")
 
-    item = items[0]
-    scene_id = item.id
-    scene_dir = SENTINEL_DIR / scene_id
-    scene_dir.mkdir(parents=True, exist_ok=True)
+def split_bbox(bbox, nx, ny):
+    """Divide a bbox [minx, miny, maxx, maxy] into nx*ny tiles."""
+    minx, miny, maxx, maxy = bbox
+    dx = (maxx - minx) / nx
+    dy = (maxy - miny) / ny
 
-    print(f"Scene found: {scene_id}")
-    print(f"Saving to: {scene_dir}")
+    tiles = []
+    for iy in range(ny):
+        for ix in range(nx):
+            t_minx = minx + ix * dx
+            t_maxx = minx + (ix + 1) * dx
+            t_miny = miny + iy * dy
+            t_maxy = miny + (iy + 1) * dy
+            tiles.append([t_minx, t_miny, t_maxx, t_maxy])
+    return tiles
 
-    # -----------------------------------------
-    # Download bands
-    # -----------------------------------------
 
-    for band in ESSENTIAL_BANDS:
-        if band not in item.assets:
-            print(f"  ⚠️ Band {band} not available in this scene.")
+def robust_post(url, headers, json, max_retries=5, timeout=120):
+    for i in range(max_retries):
+        try:
+            resp = requests.post(
+                url,
+                headers=headers,
+                json=json,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp
+
+        except Exception as e:
+            wait = 2 ** i
+            print(f" Process API failed ({e}). Attempt {i+1}/{max_retries}. Retrying in {wait}s…")
+            time.sleep(wait)
+
+    raise RuntimeError(" All attempts failed when calling the Process API")
+
+
+# ---------------------------------------------------------
+# Main Function
+# ---------------------------------------------------------
+
+def load_sentinel_scene(
+    bbox,
+    start="2023-06-01T00:00:00Z",
+    end="2023-08-31T23:59:59Z",
+    bands=None,
+    max_cloud_pct=80.0,
+    resolution=60,
+    cache_path=None,
+    force_download=False,
+    sh_client_id=None,
+    sh_client_secret=None,
+):
+
+    # --------------------------
+    # Bands
+    # --------------------------
+    if bands is None:
+        bands = ["red", "nir"]
+    band_codes = [_BAND_MAP[b] for b in bands]
+
+    # --------------------------
+    # Cache
+    # --------------------------
+    if cache_path is None:
+        cache_path = SENTINEL_DIR / f"mosaic_{resolution}m"
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    final_cache = {b: cache_path / f"{b}.tif" for b in bands}
+
+    if all(p.exists() for p in final_cache.values()) and not force_download:
+        print(f"  Sentinel-2 — reading cache: {cache_path}")
+        return {b: rxr.open_rasterio(p, masked=True).squeeze() for b, p in final_cache.items()}
+
+    # --------------------------
+    # Credentials
+    # --------------------------
+    client_id = sh_client_id or os.getenv("SH_CLIENT_ID")
+    client_secret = sh_client_secret or os.getenv("SH_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise ValueError("Missing SH_CLIENT_ID / SH_CLIENT_SECRET")
+    token = _get_cdse_token(client_id, client_secret)
+
+    # --------------------------
+    # Determine number of tiles
+    # --------------------------
+    minx, miny, maxx, maxy = bbox
+    res_deg = (resolution / 60) * RES_DEG
+
+    total_w_px = (maxx - minx) / res_deg
+    total_h_px = (maxy - miny) / res_deg
+
+    nx = max(1, int(np.ceil(total_w_px / 2500)))
+    ny = max(1, int(np.ceil(total_h_px / 2500)))
+
+    tiles_bboxes = split_bbox(bbox, nx, ny)
+    print(f"  Adaptive mosaic: {nx}x{ny} tiles ({len(tiles_bboxes)} total)")
+
+    # --------------------------
+    # Download tiles
+    # --------------------------
+    band_data_lists = {b: [] for b in bands}
+
+    for i, tbbox in enumerate(tiles_bboxes):
+        print(f"  Tile {i+1}/{len(tiles_bboxes)}...")
+
+        t_minx, t_miny, t_maxx, t_maxy = tbbox
+        w = int(round((t_maxx - t_minx) / res_deg))
+        h = int(round((t_maxy - t_miny) / res_deg))
+
+        payload = {
+            "input": {
+                "bounds": {
+                    "bbox": tbbox,
+                    "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"},
+                },
+                "data": [{
+                    "type": "sentinel-2-l2a",
+                    "dataFilter": {
+                        "timeRange": {"from": start, "to": end},
+                        "maxCloudCoverage": max_cloud_pct,
+                        "mosaickingOrder": "leastCC",
+                    },
+                }],
+            },
+            "output": {
+                "width": w,
+                "height": h,
+                "responses": [{"identifier": "default", "format": {"type": "image/tiff"}}],
+            },
+            "evalscript": _build_evalscript(band_codes),
+        }
+
+        resp = robust_post(
+            PROCESS_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+        )
+
+        if resp.status_code != 200:
+            print(f"Process API failed {i}: {resp.text}")
             continue
 
-        asset = item.assets[band]
-        url = asset.href
-        out_path = scene_dir / f"{scene_id}_{band}.tif"
+        # --------------------------
+        # Reconstruct transform + real coords
+        # --------------------------
+        with rasterio.open(BytesIO(resp.content)) as src:
+            arr = src.read().astype("float32")
+            arr = np.where(arr == 0, np.nan, arr)
 
-        if out_path.exists():
-            print(f"  ✓ {band} already exists — skipping.")
-            continue
+            transform = rasterio.transform.from_bounds(
+                t_minx, t_miny, t_maxx, t_maxy,
+                src.width, src.height
+            )
 
-        print(f"  Downloading {band}...")
-        r = requests.get(url, stream=True)
+            da_tile = xr.DataArray(
+                arr,
+                dims=("band", "y", "x"),
+                coords={
+                    "band": list(range(1, arr.shape[0] + 1)),
+                    "x": np.linspace(t_minx, t_maxx, src.width),
+                    "y": np.linspace(t_maxy, t_miny, src.height),
+                },
+                attrs={"transform": transform, "crs": "EPSG:4326"},
+            )
 
-        if r.status_code != 200:
-            print(f"    ❌ Error downloading {band}: HTTP {r.status_code}")
-            continue
+            da_tile = da_tile.rio.write_transform(transform)
+            da_tile = da_tile.rio.write_crs("EPSG:4326")
 
-        with open(out_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+            # separates per band
+            for b_idx, b_name in enumerate(bands):
+                single_band = da_tile.sel(band=b_idx + 1).drop_vars("band")
+                band_data_lists[b_name].append(single_band)
 
-        print(f"    Saved: {out_path.name}")
+    # --------------------------
+    # Final Mosaic
+    # --------------------------
+    result = {}
+    for b in bands:
+        print(f"  Creating final mosaic for band: {b}")
 
-    print("\n Download completed")
-    print(f"Files saved to: {scene_dir}")
+        merged = merge_arrays(band_data_lists[b])
 
-    return scene_dir
+        merged.rio.to_raster(final_cache[b], dtype="float32")
+        result[b] = merged
 
-
-# -----------------------------------------
-# Load Bands Function
-# -----------------------------------------
-
-def load_sentinel_bands(scene_dir: Path) -> dict[str, xr.DataArray] | None:
-    """
-    Load the essential bands of a Sentinel-2 scene saved in:
-        DATA_RAW/sentinel/<scene_id>/
-
-    Returns:
-        dict {band_name: DataArray}
-    """
-
-    if not scene_dir.exists():
-        print(f"[WARN] Scene directory not found: {scene_dir}")
-        return None
-
-    print(f"\n Loading bands from scene: {scene_dir.name}")
-
-    bands: dict[str, xr.DataArray] = {}
-
-    for band in ESSENTIAL_BANDS:
-        pattern = f"*{band}*.tif"
-        matches = sorted(scene_dir.glob(pattern))
-
-        if not matches:
-            print(f"  ⚠️ Band absent: {band}")
-            continue
-
-        tif = matches[0]
-        print(f"  Opening {band} → {tif.name}")
-
-        da = rxr.open_rasterio(tif, masked=True).squeeze()
-        da = da.rio.reproject(CRS_PROJ)
-
-        bands[band] = da
-
-        print(f"    shape={da.shape}, crs={da.rio.crs}")
-
-    if not bands:
-        print("[WARN] No bands loaded.")
-        return None
-
-    print("\n All essential bands loaded!")
-    return bands
-
+    return result
 
 
 # ---------------------------------------------------------------------------

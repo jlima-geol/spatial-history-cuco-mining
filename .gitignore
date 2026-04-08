@@ -80,6 +80,7 @@ target/
 tests.ipynb
 theory.ipynb
 work_packs.ipynb
+devlog.md
 
 # IPython
 profile_default/
@@ -91,6 +92,7 @@ obtain_remote_data_explained2.py
 erosion-proxies-drainage-patterns_explained.py
 *.tif
 data/temp/
+01_spectral_indices-1band.png
 
 
 # pyenv
