@@ -93,6 +93,7 @@ erosion-proxies-drainage-patterns_explained.py
 *.tif
 data/temp/
 01_spectral_indices-1band.png
+update-environments.ps1
 
 
 # pyenv

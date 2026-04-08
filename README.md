@@ -1,13 +1,18 @@
 # Mapping the spatial history of Copper and Cobalt mining in the DR Congo
 
-![kde_mineralisation](outputs/maps/mining_core/kde_mineralisation.png?v=2)
-
+![modis_ndvi](outputs/maps/env_impact/02_modis_ndvi_trend.png?v=2)
 
 ## Overview
-This project explores the spatial distribution and historical evolution of copper mining 
-in the Katanga Copperbelt (DR Congo). Using open-source geospatial data and tools, 
-the analysis integrates mineral occurrences, geological context, and infrastructure 
-to reveal spatial patterns associated with copper mineralization and mining development.
+This project sits at the intersection of the geochemistry of the Katanga Copperbelt and the 
+tools of spatial analysis.<br>
+
+My doctoral research (KU Leuven) focused on fluid geochemistry at the Katanga Copperbelt — 
+the world's largest stratiform/stratabound copper-cobalt deposit. That work was analytical and 
+geochemical. This project asks a different question: *what does the spatial and historical 
+footprint of this mining region look like when mapped through open-source data?*<br>
+
+It is also an exercise in building a reproducible, open GIS workflow — connecting scientific 
+context to cartographic storytelling using only freely available tools and datasets.
 
 ## Objectives
 - Map the distribution of copper mines and deposits using open-source datasets
@@ -16,21 +21,23 @@ to reveal spatial patterns associated with copper mineralization and mining deve
 - Demonstrate a reproducible GIS workflow using only open-source tools
 
 ## Data Sources
-- USGS MRDS (mineral occurrences)
-- Overture (roads, railways, settlements)
-- SRTM DEM (elevation)
-- OGC API geology
-- GADM (administrative boundaries)
+- SENTINEL-2 (Copernicus)
+- LANDSAT (Microsoft Planetary Computer)
+- MODIS NDVI (Microsoft Planetary Computer)
+- Overture (for roads, railways, settlements)
+- USGS MRDS (for mineral occurrences)
+- SRTM DEM (NASADEM/SRTM)
+- GADM (administrative boundaries; geodata.ucdavis.edu)
 
 ## Workflow
-1. Data collection and preprocessing  
-2. Spatial analysis (kernel density, clustering, distance metrics)  
-3. Terrain and geological context integration  
-4. Cartographic design in QGIS  
-5. Narrative synthesis  
+1. Data collection and preprocessing
+2. Terrain and geological context integration
+3. Spatial analysis (kernel density, clustering, distance metrics)
+4. Cartographic design in QGIS
+5. Narrative synthesis
 
 ## Tools
-- Python (geopandas, rasterio, numpy, matplotlib)
+- Python (geopandas, matplotlib, numpy, pandas, pip, rasterio, rioxarray, scipy, shapely, xarray)
 - QGIS
 - Overture / Overpass API
 

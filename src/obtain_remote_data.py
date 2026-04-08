@@ -13,23 +13,28 @@ and geological units (OneGeology WFS with fallback to USGS ScienceBase).
 from __future__ import annotations
 
 import io
+import os
+import time
 import zipfile
+import numpy as np
+from io import BytesIO
 from pathlib import Path
-from pystac_client import Client
-
 
 import geopandas as gpd
 import pandas as pd
-import requests
 from shapely.geometry import box
 
+import rasterio
 import xarray as xr
 import rioxarray as rxr
+from rioxarray.merge import merge_arrays
 
+import requests
 import earthaccess
 import pystac_client
 import planetary_computer
 import odc.stac
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -58,17 +63,6 @@ for _d in (DATA_RAW, DATA_PROCESSED, DATA_TEMP, MAPS_OUT, FIGURES_OUT):
 # ---------------------------------------------------------------------------
 # Sentinel-2 (ESA / Copernicus — AWS STAC via odc.stac)
 # ---------------------------------------------------------------------------
-
-import os
-import time
-import requests
-import numpy as np
-import xarray as xr
-import rioxarray as rxr
-import rasterio
-from io import BytesIO
-from pathlib import Path
-from rioxarray.merge import merge_arrays
 
 # Sentinel-2 band mapping
 _BAND_MAP = {
