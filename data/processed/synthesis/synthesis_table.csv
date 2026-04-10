@@ -1,0 +1,6 @@
+cluster,n_mines,dominant_geology,median_dist_road,median_dist_border,mean_impact,mean_ndvi_trend
+1,18,Precambrian,204.7,53.8,0.308,-0.00585
+3,11,Precambrian,136.1,24.0,0.287,-0.00195
+2,39,Precambrian,9.2,24.4,0.278,0.0025
+4,5,Precambrian,13.3,30.8,0.278,0.00096
+0,42,Precambrian,176.1,95.5,0.263,-0.00142
