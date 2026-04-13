@@ -135,7 +135,7 @@ def compute_ndvi_trend(
 
     Returns
     -------
-    DataArray of OLS slope [NDVI yr⁻¹], masked where < min_years valid obs.
+    DataArray of OLS slope [NDVI yr�¹], masked where < min_years valid obs.
     """
     if len(composites) < min_years:
         print(f"  [WARN] Only {len(composites)} composites — trend unreliable.")
@@ -186,7 +186,7 @@ def compute_ndvi_trend(
         slope_vals,
         coords={k: ref.coords[k] for k in ("y", "x") if k in ref.coords},
         dims=["y", "x"],
-        attrs={"long_name": "NDVI trend (OLS slope)", "units": "NDVI yr⁻¹"},
+        attrs={"long_name": "NDVI trend (OLS slope)", "units": "NDVI yr�¹"},
     )
     slope_da.rio.write_crs(CRS_PROJ, inplace=True)
 
@@ -194,7 +194,7 @@ def compute_ndvi_trend(
     finite = slope_vals[np.isfinite(slope_vals)]
     pct_neg = (finite < 0).sum() / len(finite) * 100
     print(f"  ✓ Trend map: {slope_da.shape}")
-    print(f"    slope range: {finite.min():.4f} - {finite.max():.4f} NDVI yr⁻¹")
+    print(f"    slope range: {finite.min():.4f} - {finite.max():.4f} NDVI yr�¹")
     print(f"    declining pixels: {pct_neg:.1f}%")
 
     return slope_da
@@ -203,7 +203,7 @@ def compute_ndvi_trend(
 # Identify persistent decline zones
 # ---------------------------------------------------------------------------
 
-DECLINE_THRESHOLD = -0.003  # NDVI yr⁻¹
+DECLINE_THRESHOLD = -0.003  # NDVI yr�¹
 
 def vectorise_decline_zones(
     trend: xr.DataArray,
