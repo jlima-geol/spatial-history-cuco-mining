@@ -13,6 +13,8 @@ The Copperbelt — stretching across southern DRC and northern Zambia — is one
 
 The analysis covers **~210,000 km²**, integrates **132 MRDS mineral occurrences**, and spans a **15-year NDVI time series (2010–2025)** derived from MODIS MOD13Q1.
 
+Sensitivity analysis across eps ∈ {5, 10, 20, 30, 40} km showed that 5 clusters were stable within the 20–30 km neighbourhood range, with eps=25 km selected as the parameter that best preserves the known geographic structure of the Copperbelt arc.
+
 ---
 
 ## Key Findings
@@ -21,7 +23,8 @@ The analysis covers **~210,000 km²**, integrates **132 MRDS mineral occurrences
 - **Precambrian basement rocks host 0.70 mines per 1,000 km²** — by far the highest mineralisation density of any lithological unit, confirming structural geological control on deposit distribution.
 - **Mine proximity to water is remarkably consistent**: median distance to nearest river/stream of just 1.5 km across all occurrences, with implications for acid mine drainage risk.
 - **Spatial autocorrelation is significant** (Moran's I = 0.205, p = 0.026), confirming that mine clustering is non-random and district-level — not uniformly distributed along the belt.
-- **Cluster C2** (near-road, high-density) shows large environmental impact score (0.278) but stable NDVI trend classification (0.0025).
+- **Cluster C2** (near-road, high-density) shows large environmental impact score (mean of 0.278) but stable NDVI trend classification (0.0025). C2 is a chronically impacted area (high current score), but whose main degradation possibly occurred before the MODIS time window.
+- **Cluster C1**, by contrast, shows recent active decline: highest mean impact score of 0.3082 and lowest mean NDVI trend of -0.0058.
 
 ---
 
@@ -57,9 +60,9 @@ Each notebook consumes outputs (.gpkg,.tif) from the prior stage. Most remote da
 | MODIS MOD13Q1 NDVI | NASA LP DAAC | Microsoft Planetary Computer (STAC) |
 | Sentinel-2 L2A | ESA Copernicus | CDSE Sentinel Hub Process API |
 | Infrastructure | Overture | Overturemaps
-| MRDS Mineral Deposits | USGS | Direct download → Parquet cache |
+| MRDS Mineral Deposits | USGS | USGS portal |
 | Geology / Lithology | BGS / regional sources | Local ZIP fallback |
-| Administrative boundaries | GADM | `geopandas` |
+| Administrative boundaries | GADM | `geodata`  Python package |
 
 ---
 
@@ -68,7 +71,7 @@ Each notebook consumes outputs (.gpkg,.tif) from the prior stage. Most remote da
 ```
 Python 3.10          geopandas · rioxarray · xarray · rasterio
 pip 26.0.1           matplotlib · numpy 2.4.2 · pandas 3.0.0
-pysheds 0.3.5        scipy 1.17.0 · scikit-learn (DBSCAN, KDE)
+pysheds 0.3.5        scipy 1.17.0 · scipy.ndimage · scikit-learn (DBSCAN, KDE)
 pystac-client        planetary-computer · odc-stac · requests 2.32.3 ·
 earthaccess          
 ```
